@@ -27,7 +27,7 @@ app.use(helmet());
    CORS Configuration
 ======================= */
 const allowedOrigins = [
-    "https://expense-tracker-frontend-theta-one.vercel.app",
+    "https://expense-tracker-frontend-theta-one.vercel.app/",
     "http://localhost:5173",
     
 ];

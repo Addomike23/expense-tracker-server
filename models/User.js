@@ -19,6 +19,16 @@ const userSchema = new mongoose.Schema({
         type: String, 
         required: [true, 'Password is required']
     },
+      // Currency preference
+    currency: {
+        type: String,
+        default: 'USD',
+        enum: ['USD', 'EUR', 'GBP', 'GHS', 'NGN', 'KES', 'ZAR', 'JPY', 'CAD', 'AUD', 'INR', 'CNY']
+    },
+    currencySymbol: {
+        type: String,
+        default: '$'
+    },
     isActive: { 
         type: Boolean, 
         default: true 

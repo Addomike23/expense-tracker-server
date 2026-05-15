@@ -4,14 +4,12 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const connectDB = require("../config/connectDB");
+const { getAvailableCurrencies, currencies } = require("../utils/currencyConfig");
 
 // ===============================
 // HELPER FUNCTIONS
 // ===============================
 
-/**
- * Generate JWT Token
- */
 const generateToken = (userId) => {
     return jwt.sign(
         { user_id: userId },
@@ -20,9 +18,6 @@ const generateToken = (userId) => {
     );
 };
 
-/**
- * Send token response
- */
 const sendTokenResponse = (user, statusCode, res) => {
     const token = generateToken(user._id);
 
@@ -30,6 +25,8 @@ const sendTokenResponse = (user, statusCode, res) => {
         id: user._id,
         username: user.username,
         email: user.email,
+        currency: user.currency || 'USD',
+        currencySymbol: user.currencySymbol || '$',
         createdAt: user.createdAt
     };
 
@@ -41,17 +38,11 @@ const sendTokenResponse = (user, statusCode, res) => {
     });
 };
 
-/**
- * Hash password
- */
 const hashPassword = async (password) => {
     const salt = await bcrypt.genSalt(12);
     return await bcrypt.hash(password, salt);
 };
 
-/**
- * Compare password
- */
 const comparePassword = async (plainPassword, hashedPassword) => {
     return await bcrypt.compare(plainPassword, hashedPassword);
 };
@@ -59,18 +50,11 @@ const comparePassword = async (plainPassword, hashedPassword) => {
 // ===============================
 // REGISTER USER
 // ===============================
-
-/**
- * @desc    Register a new user
- * @route   POST /api/auth/register
- * @access  Public
- */
 const register = async (req, res) => {
     try {
         await connectDB();
-        const { username, email, password } = req.body;
+        const { username, email, password, currency } = req.body;
 
-        // Validation
         if (!username || !email || !password) {
             return res.status(400).json({
                 success: false,
@@ -78,7 +62,6 @@ const register = async (req, res) => {
             });
         }
 
-        // Check if user exists
         const existingUser = await User.findOne({
             $or: [{ username }, { email }]
         });
@@ -92,7 +75,6 @@ const register = async (req, res) => {
             });
         }
 
-        // Validate email format
         const emailRegex = /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/;
         if (!emailRegex.test(email)) {
             return res.status(400).json({
@@ -101,7 +83,6 @@ const register = async (req, res) => {
             });
         }
 
-        // Validate password strength
         if (password.length < 6) {
             return res.status(400).json({
                 success: false,
@@ -109,21 +90,30 @@ const register = async (req, res) => {
             });
         }
 
-        // Hash password
-        const hashedPassword = await hashPassword(password);
+        // Validate currency if provided
+        const userCurrency = currency || 'USD';
+        const validCurrencies = Object.keys(currencies);
+        if (!validCurrencies.includes(userCurrency)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid currency code"
+            });
+        }
 
-        // Create user
+        const hashedPassword = await hashPassword(password);
+        const currencyConfig = currencies[userCurrency];
+
         const user = await User.create({
             username,
             email,
-            password_hash: hashedPassword
+            password_hash: hashedPassword,
+            currency: userCurrency,
+            currencySymbol: currencyConfig.symbol
         });
 
         sendTokenResponse(user, 201, res);
 
     } catch (error) {
-        
-
         if (error.name === 'ValidationError') {
             const messages = Object.values(error.errors).map(e => e.message);
             return res.status(400).json({
@@ -132,6 +122,7 @@ const register = async (req, res) => {
             });
         }
 
+        console.error("Register error:", error);
         res.status(500).json({
             success: false,
             message: "Registration failed",
@@ -143,12 +134,6 @@ const register = async (req, res) => {
 // ===============================
 // LOGIN USER
 // ===============================
-
-/**
- * @desc    Login user
- * @route   POST /api/auth/login
- * @access  Public
- */
 const login = async (req, res) => {
     try {
         await connectDB();
@@ -161,7 +146,6 @@ const login = async (req, res) => {
             });
         }
 
-        // Find user
         const user = await User.findOne({ username });
 
         if (!user) {
@@ -171,7 +155,6 @@ const login = async (req, res) => {
             });
         }
 
-        // Compare password
         const isPasswordMatch = await comparePassword(password, user.password_hash);
 
         if (!isPasswordMatch) {
@@ -181,10 +164,14 @@ const login = async (req, res) => {
             });
         }
 
+        // Update last login
+        user.lastLogin = new Date();
+        await user.save();
+
         sendTokenResponse(user, 200, res);
 
     } catch (error) {
-     
+        console.error("Login error:", error);
         res.status(500).json({
             success: false,
             message: "Login failed",
@@ -196,12 +183,6 @@ const login = async (req, res) => {
 // ===============================
 // LOGOUT USER
 // ===============================
-
-/**
- * @desc    Logout user (blacklist token)
- * @route   POST /api/auth/logout
- * @access  Private
- */
 const logout = async (req, res) => {
     try {
         await connectDB();
@@ -209,13 +190,9 @@ const logout = async (req, res) => {
 
         if (token) {
             const decoded = jwt.decode(token);
-
             if (decoded && decoded.exp) {
                 const expiresAt = new Date(decoded.exp * 1000);
-
                 await BlacklistedToken.addToBlacklist(token, expiresAt, req.user_id);
-
-                
             }
         }
 
@@ -225,8 +202,6 @@ const logout = async (req, res) => {
         });
 
     } catch (error) {
-        
-
         if (error.code === 11000) {
             return res.status(200).json({
                 success: true,
@@ -242,14 +217,10 @@ const logout = async (req, res) => {
     }
 };
 
-/**
- * Check if token is blacklisted (for middleware)
- */
 const isTokenBlacklisted = async (token) => {
     try {
         return await BlacklistedToken.isBlacklisted(token);
     } catch (error) {
-      
         return false;
     }
 };
@@ -257,15 +228,9 @@ const isTokenBlacklisted = async (token) => {
 // ===============================
 // GET CURRENT USER PROFILE
 // ===============================
-
-/**
- * @desc    Get current logged in user profile
- * @route   GET /api/auth/me
- * @access  Private
- */
 const getMe = async (req, res) => {
     try {
-        await connectDB();  
+        await connectDB();
         const user = await User.findById(req.user_id)
             .select('-password_hash')
             .lean();
@@ -283,13 +248,15 @@ const getMe = async (req, res) => {
                 id: user._id,
                 username: user.username,
                 email: user.email,
+                currency: user.currency || 'USD',
+                currencySymbol: user.currencySymbol || '$',
                 createdAt: user.createdAt,
                 updatedAt: user.updatedAt
             }
         });
 
     } catch (error) {
-       
+        console.error("Get me error:", error);
         res.status(500).json({
             success: false,
             message: "Failed to fetch profile",
@@ -301,12 +268,6 @@ const getMe = async (req, res) => {
 // ===============================
 // UPDATE USER PROFILE
 // ===============================
-
-/**
- * @desc    Update user profile
- * @route   PUT /api/auth/me
- * @access  Private
- */
 const updateProfile = async (req, res) => {
     try {
         await connectDB();
@@ -321,7 +282,6 @@ const updateProfile = async (req, res) => {
             });
         }
 
-        // Check if username/email already taken
         if (username || email) {
             const existingUser = await User.findOne({
                 _id: { $ne: req.user_id },
@@ -341,7 +301,6 @@ const updateProfile = async (req, res) => {
             }
         }
 
-        // Update fields
         if (username) user.username = username;
         if (email) user.email = email;
 
@@ -354,12 +313,14 @@ const updateProfile = async (req, res) => {
                 id: user._id,
                 username: user.username,
                 email: user.email,
+                currency: user.currency,
+                currencySymbol: user.currencySymbol,
                 createdAt: user.createdAt
             }
         });
 
     } catch (error) {
-       
+        console.error("Update profile error:", error);
         res.status(500).json({
             success: false,
             message: "Failed to update profile",
@@ -369,18 +330,85 @@ const updateProfile = async (req, res) => {
 };
 
 // ===============================
+// UPDATE CURRENCY PREFERENCE
+// ===============================
+const updateCurrency = async (req, res) => {
+    try {
+        await connectDB();
+        const { currency } = req.body;
+
+        const validCurrencies = Object.keys(currencies);
+        if (!validCurrencies.includes(currency)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid currency code"
+            });
+        }
+
+        const currencyConfig = currencies[currency];
+
+        const user = await User.findByIdAndUpdate(
+            req.user_id,
+            {
+                currency: currency,
+                currencySymbol: currencyConfig.symbol
+            },
+            { new: true }
+        ).select('-password_hash');
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: `Currency updated to ${currencyConfig.name}`,
+            user: {
+                id: user._id,
+                username: user.username,
+                email: user.email,
+                currency: user.currency,
+                currencySymbol: user.currencySymbol
+            }
+        });
+
+    } catch (error) {
+        console.error("Update currency error:", error);
+        res.status(500).json({
+            success: false,
+            message: "Failed to update currency",
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+};
+
+// ===============================
+// GET AVAILABLE CURRENCIES
+// ===============================
+const getCurrencies = async (req, res) => {
+    try {
+        const availableCurrencies = getAvailableCurrencies();
+        res.status(200).json({
+            success: true,
+            data: availableCurrencies
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: "Failed to fetch currencies"
+        });
+    }
+};
+
+// ===============================
 // CHANGE PASSWORD
 // ===============================
-
-/**
- * @desc    Change password (logged in user)
- * @route   PUT /api/auth/password
- * @access  Private
- */
 const changePassword = async (req, res) => {
     try {
         const { currentPassword, newPassword } = req.body;
-
         await connectDB();
 
         if (!currentPassword || !newPassword) {
@@ -398,7 +426,6 @@ const changePassword = async (req, res) => {
         }
 
         const user = await User.findById(req.user_id);
-
         const isPasswordMatch = await comparePassword(currentPassword, user.password_hash);
 
         if (!isPasswordMatch) {
@@ -408,20 +435,14 @@ const changePassword = async (req, res) => {
             });
         }
 
-        // Hash new password
         user.password_hash = await hashPassword(newPassword);
         await user.save();
 
-        // Blacklist current token to force re-login
         const token = req.headers.authorization?.split(' ')[1];
         if (token) {
             const decoded = jwt.decode(token);
             if (decoded && decoded.exp) {
-                await BlacklistedToken.addToBlacklist(
-                    token,
-                    new Date(decoded.exp * 1000),
-                    req.user_id
-                );
+                await BlacklistedToken.addToBlacklist(token, new Date(decoded.exp * 1000), req.user_id);
             }
         }
 
@@ -431,11 +452,10 @@ const changePassword = async (req, res) => {
         });
 
     } catch (error) {
-      
+        console.error("Change password error:", error);
         res.status(500).json({
             success: false,
-            message: "Failed to change password",
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            message: "Failed to change password"
         });
     }
 };
@@ -443,17 +463,10 @@ const changePassword = async (req, res) => {
 // ===============================
 // FORGOT PASSWORD
 // ===============================
-
-/**
- * @desc    Forgot password - send reset token
- * @route   POST /api/auth/forgot-password
- * @access  Public
- */
 const forgotPassword = async (req, res) => {
     try {
         await connectDB();
-        const { email } =   req.body;
-
+        const { email } = req.body;
 
         if (!email) {
             return res.status(400).json({
@@ -471,22 +484,14 @@ const forgotPassword = async (req, res) => {
             });
         }
 
-        // Generate reset token
         const resetToken = crypto.randomBytes(32).toString('hex');
-        const resetPasswordToken = crypto
-            .createHash('sha256')
-            .update(resetToken)
-            .digest('hex');
+        const resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
 
         user.resetPasswordToken = resetPasswordToken;
-        user.resetPasswordExpire = Date.now() + 60 * 60 * 1000; // 1 hour
-
+        user.resetPasswordExpire = Date.now() + 60 * 60 * 1000;
         await user.save();
 
         const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-
-        // TODO: Send email with resetUrl
-        // await sendResetPasswordEmail(user.email, resetUrl);
 
         res.status(200).json({
             success: true,
@@ -495,11 +500,10 @@ const forgotPassword = async (req, res) => {
         });
 
     } catch (error) {
-       
+        console.error("Forgot password error:", error);
         res.status(500).json({
             success: false,
-            message: "Failed to process request",
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            message: "Failed to process request"
         });
     }
 };
@@ -507,12 +511,6 @@ const forgotPassword = async (req, res) => {
 // ===============================
 // RESET PASSWORD
 // ===============================
-
-/**
- * @desc    Reset password with token
- * @route   POST /api/auth/reset-password/:token
- * @access  Public
- */
 const resetPassword = async (req, res) => {
     try {
         await connectDB();
@@ -526,10 +524,7 @@ const resetPassword = async (req, res) => {
             });
         }
 
-        const resetPasswordToken = crypto
-            .createHash('sha256')
-            .update(token)
-            .digest('hex');
+        const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
 
         const user = await User.findOne({
             resetPasswordToken,
@@ -543,11 +538,9 @@ const resetPassword = async (req, res) => {
             });
         }
 
-        // Hash new password
         user.password_hash = await hashPassword(password);
         user.resetPasswordToken = undefined;
         user.resetPasswordExpire = undefined;
-
         await user.save();
 
         res.status(200).json({
@@ -556,11 +549,10 @@ const resetPassword = async (req, res) => {
         });
 
     } catch (error) {
-        
+        console.error("Reset password error:", error);
         res.status(500).json({
             success: false,
-            message: "Failed to reset password",
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            message: "Failed to reset password"
         });
     }
 };
@@ -568,12 +560,6 @@ const resetPassword = async (req, res) => {
 // ===============================
 // DELETE USER ACCOUNT
 // ===============================
-
-/**
- * @desc    Delete user account
- * @route   DELETE /api/auth/me
- * @access  Private
- */
 const deleteAccount = async (req, res) => {
     try {
         await connectDB();
@@ -586,7 +572,6 @@ const deleteAccount = async (req, res) => {
             });
         }
 
-        // Blacklist current token
         const token = req.headers.authorization?.split(' ')[1];
         if (token) {
             const decoded = jwt.decode(token);
@@ -595,7 +580,6 @@ const deleteAccount = async (req, res) => {
             }
         }
 
-        // Delete user permanently
         await User.findByIdAndDelete(req.user_id);
 
         res.status(200).json({
@@ -604,11 +588,10 @@ const deleteAccount = async (req, res) => {
         });
 
     } catch (error) {
-        
+        console.error("Delete account error:", error);
         res.status(500).json({
             success: false,
-            message: "Failed to delete account",
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            message: "Failed to delete account"
         });
     }
 };
@@ -616,12 +599,6 @@ const deleteAccount = async (req, res) => {
 // ===============================
 // REFRESH TOKEN
 // ===============================
-
-/**
- * @desc    Refresh JWT token
- * @route   POST /api/auth/refresh
- * @access  Private
- */
 const refreshToken = async (req, res) => {
     try {
         await connectDB();
@@ -634,7 +611,6 @@ const refreshToken = async (req, res) => {
             });
         }
 
-        // Generate new token
         const newToken = generateToken(user._id);
 
         res.status(200).json({
@@ -644,11 +620,10 @@ const refreshToken = async (req, res) => {
         });
 
     } catch (error) {
-   
+        console.error("Refresh token error:", error);
         res.status(500).json({
             success: false,
-            message: "Failed to refresh token",
-            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+            message: "Failed to refresh token"
         });
     }
 };
@@ -660,6 +635,8 @@ module.exports = {
     isTokenBlacklisted,
     getMe,
     updateProfile,
+    updateCurrency,
+    getCurrencies,
     changePassword,
     forgotPassword,
     resetPassword,
